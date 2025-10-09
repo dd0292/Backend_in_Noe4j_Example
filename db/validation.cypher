@@ -12,3 +12,7 @@ MATCH (p:Publicación) WHERE NOT (p)-[:TIENE_ETIQUETA]->(:Etiqueta) RETURN p;
 MATCH (a:Usuario)-[:AMIGO_DE]->(b)
 WHERE NOT (b)-[:AMIGO_DE]->(a)
 RETURN a,b;
+
+// wipe all data
+MATCH (n)
+DETACH DELETE n;

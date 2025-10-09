@@ -1,18 +1,20 @@
-from neo4j import GraphDatabase
-from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
-import os
+from dataclasses import dataclass
+from neo4j import GraphDatabase
+from dotenv import load_dotenv
 import uuid
+import os
 
+load_dotenv()
 # ------------------------------------------------------------
 # CONFIGURACIÓN DE CONEXIÓN
 # - Para una instancia local: URI = "bolt://localhost:7687"
 # - Para Neo4j Aura o cluster: URI = "neo4j://<host>:7687"
 #   (si usas neo4j:// y no es cluster, verás "Unable to retrieve routing information")
 # ------------------------------------------------------------
-URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-AUTH_USER = os.getenv("NEO4J_USER", "neo4j")
-AUTH_PASS = os.getenv("NEO4J_PASSWORD", "8UTLTRzlOW5pKf_4AsWunYzGZY2f7he2ADhGQZS4nuw")
+URI = os.getenv("NEO4J_URI")
+AUTH_USER = os.getenv("NEO4J_USERNAME", "neo4j")
+AUTH_PASS = os.getenv("NEO4J_PASSWORD")
 
 # ------------------------------------------------------------
 # MODELOS (opcionales, solo para tipado/claridad)

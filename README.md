@@ -25,29 +25,25 @@ By:
 ```
 
 ## Prerequisites
-- Download from [https://neo4j.com/download/](https://neo4j.com/download/).
-- Create a **new project** → **Add Database** → choose *Local DBMS*.
-- Set:
-    ```
-    Database name: social-network
-    Username: neo4j
-    Password: your_password
-    ```
-- Start the database and open **Neo4j Browser**. 
+- Download from [Neo4j Desktop](https://neo4j.com/download/).
+- Create/connect to a "Local instace" or "Remote connection" 
 - Python 3.10+ (`pip install -r app/requirements.txt`).
 - Environment variables (set in your shell or `.env`):
-  - `SUPABASE_URL` — your project URL
-  - `SUPABASE_ANON_KEY` — anon/public key for the client app
-  - `USER_EMAIL` / `USER_PASSWORD` — test user credentials (for app quick-demo)
+  - `NEO4J_URI` — your project URL
+  - `NEO4J_USER` — public user name for the client app
+  - `NEO4J_PASSWORD` — user password
 
 ## Quick start
 ### Setup:
-   ```bash
-   pip install -r requirements.txt
-   python main.py
-   ```
+1. Open Supabase Neo4j Desktop → Tools → Query.
+3. Run `db/schema.cypher` to insert the schema.
+4. Run `db/seed.cypher` to add mock data.
+
 ### Run the app:
-   ```bash
-   pip install -r requirements.txt
-   python main.py
-   ```
+```bash
+cd app
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+python main.py
+```

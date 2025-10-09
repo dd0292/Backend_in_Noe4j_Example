@@ -114,7 +114,6 @@ MATCH (b:Usuario {email:pair[1]})
 MERGE (a)-[:AMIGO_DE]->(b)
 MERGE (b)-[:AMIGO_DE]->(a);
 
-
 // FOLLOW RELATIONSHIPS (one-way)
 UNWIND [
   ['ana@mail.com','elena@mail.com'],
