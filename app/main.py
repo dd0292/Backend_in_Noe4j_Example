@@ -2,36 +2,33 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from neo4j import GraphDatabase
 from dotenv import load_dotenv
-import uuid
 import os
+import uuid
 
+# ------------------------------------------------------------
+# CONFIG
+# ------------------------------------------------------------
 load_dotenv()
-# ------------------------------------------------------------
-# CONFIGURACIÓN DE CONEXIÓN
-# - Para una instancia local: URI = "bolt://localhost:7687"
-# - Para Neo4j Aura o cluster: URI = "neo4j://<host>:7687"
-#   (si usas neo4j:// y no es cluster, verás "Unable to retrieve routing information")
-# ------------------------------------------------------------
-URI = os.getenv("NEO4J_URI")
+URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 AUTH_USER = os.getenv("NEO4J_USERNAME", "neo4j")
 AUTH_PASS = os.getenv("NEO4J_PASSWORD")
 
 # ------------------------------------------------------------
-# MODELOS (opcionales, solo para tipado/claridad)
+# DATA MODELS
 # ------------------------------------------------------------
 @dataclass
-class LineaInput:
-    producto: str       # codigo del producto
-    cantidad: float
-    precio: float       # precioUnitario en la línea
+class PublicacionInput:
+    contenido: str
+    fecha: str
+    likes: int
+    etiquetas: List[str]
 
 @dataclass
-class FacturaInput:
-    numero: str
-    fecha: str          # 'YYYY-MM-DD'
-    moneda: str
-    cliente: str        # codigo del cliente
-    lineas: List[LineaInput]
+class UsuarioInput:
+    id: str
+    nombre: str
+    email: str
+    fechaRegistro: str
 
 # ------------------------------------------------------------
 # DRIVER
@@ -42,288 +39,206 @@ def get_driver():
     return driver
 
 # ------------------------------------------------------------
-# ESQUEMA / CONSTRAINTS
+# SCHEMA / CONSTRAINTS
 # ------------------------------------------------------------
 def init_schema(driver):
-    cypher = [
+    schema_queries = [
         """
-        CREATE CONSTRAINT cliente_codigo IF NOT EXISTS
-        FOR (c:Cliente) REQUIRE c.codigo IS UNIQUE
+        CREATE CONSTRAINT IF NOT EXISTS
+        FOR (u:Usuario) REQUIRE u.email IS UNIQUE
         """,
         """
-        CREATE CONSTRAINT producto_codigo IF NOT EXISTS
-        FOR (p:Producto) REQUIRE p.codigo IS UNIQUE
+        CREATE CONSTRAINT IF NOT EXISTS
+        FOR (u:Usuario) REQUIRE (u.id) IS NOT NULL
         """,
         """
-        CREATE CONSTRAINT factura_numero IF NOT EXISTS
-        FOR (f:Factura) REQUIRE f.numero IS UNIQUE
+        CREATE CONSTRAINT IF NOT EXISTS
+        FOR (p:Publicación) REQUIRE p.id IS UNIQUE
         """,
         """
-        CREATE CONSTRAINT linea_id IF NOT EXISTS
-        FOR (l:Linea) REQUIRE l.id IS UNIQUE
+        CREATE CONSTRAINT IF NOT EXISTS
+        FOR (e:Etiqueta) REQUIRE e.nombre IS UNIQUE
         """
     ]
     with driver.session() as s:
-        for q in cypher:
+        for q in schema_queries:
             s.run(q)
 
 # ------------------------------------------------------------
-# UPSERTS BÁSICOS
+# CRUD / UPSERTS
 # ------------------------------------------------------------
-def upsert_cliente(driver, codigo: str, nombre: str, pais: Optional[str] = None):
+def upsert_usuario(driver, user: UsuarioInput):
     q = """
-    MERGE (c:Cliente {codigo:$codigo})
-    SET c.nombre = $nombre,
-        c.pais   = $pais
-    RETURN c
+    MERGE (u:Usuario {email:$email})
+    SET u.id=$id, u.nombre=$nombre, u.fechaRegistro=date($fechaRegistro)
+    RETURN u
     """
     with driver.session() as s:
-        return s.run(q, codigo=codigo, nombre=nombre, pais=pais).single()
+        return s.run(q, **user.__dict__).single()
 
-def upsert_producto(driver, codigo: str, nombre: str, categoria: Optional[str] = None):
-    q = """
-    MERGE (p:Producto {codigo:$codigo})
-    SET p.nombre = $nombre,
-        p.categoria = $categoria
-    RETURN p
+def create_publicacion(driver, user_email: str, pub: PublicacionInput):
     """
-    with driver.session() as s:
-        return s.run(q, codigo=codigo, nombre=nombre, categoria=categoria).single()
-
-# ------------------------------------------------------------
-# CREAR FACTURA + LÍNEAS (TRANSACCIÓN)
-# ------------------------------------------------------------
-def create_factura_with_lineas(driver, inv: FacturaInput):
-    """
-    Crea/actualiza la factura y añade líneas con id UUID,
-    conservando precio e historial en la entidad Línea.
+    Crea una publicación y la conecta con el autor y sus etiquetas.
     """
     def _tx(tx):
-        # Cliente
-        tx.run(
-            "MERGE (c:Cliente {codigo:$codigo})",
-            codigo=inv.cliente
-        )
-        # Factura
+        post_id = str(uuid.uuid4())
         tx.run(
             """
-            MERGE (f:Factura {numero:$numero})
-            SET f.fecha = date($fecha),
-                f.moneda = $moneda
-            WITH f
-            MATCH (c:Cliente {codigo:$cliente})
-            MERGE (f)-[:DE_CLIENTE]->(c)
+            MATCH (u:Usuario {email:$email})
+            MERGE (p:Publicación {id:$id})
+            SET p.contenido=$contenido, p.fecha=date($fecha), p.likes=$likes
+            MERGE (u)-[:CREA]->(p)
+            WITH p, $etiquetas AS tags
+            UNWIND tags AS tag
+            MERGE (e:Etiqueta {nombre:tag})
+            MERGE (p)-[:TIENE_ETIQUETA]->(e)
             """,
-            numero=inv.numero, fecha=inv.fecha, moneda=inv.moneda, cliente=inv.cliente
+            email=user_email, id=post_id,
+            contenido=pub.contenido, fecha=pub.fecha,
+            likes=pub.likes, etiquetas=pub.etiquetas
         )
-        # Líneas
-        for ln in inv.lineas:
-            ln_id = str(uuid.uuid4())
-            tx.run(
-                """
-                MATCH (f:Factura {numero:$numero})
-                MATCH (p:Producto {codigo:$prod})
-                CREATE (l:Linea {
-                    id:$id, cantidad:$cant, precioUnitario:$precio
-                })
-                MERGE (f)-[:TIENE_LINEA]->(l)
-                MERGE (l)-[:DE_PRODUCTO]->(p)
-                """,
-                numero=inv.numero, prod=ln.producto, id=ln_id, cant=ln.cantidad, precio=ln.precio
-            )
     with driver.session() as s:
         s.execute_write(_tx)
 
-# ------------------------------------------------------------
-# CONSULTAS
-# ------------------------------------------------------------
-def detalle_factura(driver, numero: str) -> List[Dict[str, Any]]:
+def create_amistad(driver, email_a: str, email_b: str):
+    """
+    Crea amistad bidireccional.
+    """
     q = """
-    MATCH (f:Factura {numero:$numero})-[:TIENE_LINEA]->(l)-[:DE_PRODUCTO]->(p)
-    RETURN f.numero AS factura, toString(f.fecha) AS fecha, f.moneda AS moneda,
-           p.codigo AS prodCodigo, p.nombre AS prodNombre,
-           l.cantidad AS cantidad, l.precioUnitario AS precioUnitario,
-           l.cantidad * l.precioUnitario AS totalLinea
-    ORDER BY prodCodigo
+    MATCH (a:Usuario {email:$a})
+    MATCH (b:Usuario {email:$b})
+    MERGE (a)-[:AMIGO_DE]->(b)
+    MERGE (b)-[:AMIGO_DE]->(a)
     """
     with driver.session() as s:
-        return [r.data() for r in s.run(q, numero=numero)]
+        s.run(q, a=email_a, b=email_b)
 
-def ventas_por_producto(driver,
-                        fecha_desde: Optional[str] = None,
-                        fecha_hasta_excl: Optional[str] = None,
-                        incluir_sin_venta: bool = True) -> List[Dict[str, Any]]:
+def create_seguimiento(driver, seguidor: str, seguido: str):
     """
-    Suma cantidad*precio por producto. Si incluir_sin_venta=True,
-    muestra también productos sin líneas (ventaTotal = 0).
-    Admite rango de fechas [desde, hasta).
+    Crea relación de seguimiento unidireccional.
     """
-    where = []
-    if fecha_desde:
-        where.append("f.fecha >= date($desde)")
-    if fecha_hasta_excl:
-        where.append("f.fecha < date($hasta)")
-    where_clause = ("WHERE " + " AND ".join(where)) if where else ""
-
-    if incluir_sin_venta:
-        q = f"""
-        MATCH (p:Producto)
-        OPTIONAL MATCH (p)<-[:DE_PRODUCTO]-(l:Linea)<-[:TIENE_LINEA]-(f:Factura)
-        {where_clause}
-        WITH p, sum(coalesce(l.cantidad,0) * coalesce(l.precioUnitario,0)) AS ventaTotal
-        RETURN p.codigo AS producto, p.nombre AS nombre, ventaTotal
-        ORDER BY ventaTotal DESC, producto
-        """
-    else:
-        q = f"""
-        MATCH (p:Producto)<-[:DE_PRODUCTO]-(l:Linea)<-[:TIENE_LINEA]-(f:Factura)
-        {where_clause}
-        WITH p, sum(l.cantidad * l.precioUnitario) AS ventaTotal
-        RETURN p.codigo AS producto, p.nombre AS nombre, ventaTotal
-        ORDER BY ventaTotal DESC, producto
-        """
-    params = {"desde": fecha_desde, "hasta": fecha_hasta_excl}
-    with driver.session() as s:
-        return [r.data() for r in s.run(q, **{k:v for k,v in params.items() if v})]
-
-def ventas_por_cliente(driver) -> List[Dict[str, Any]]:
     q = """
-    MATCH (c:Cliente)<-[:DE_CLIENTE]-(f:Factura)-[:TIENE_LINEA]->(l)
-    RETURN c.codigo AS cliente, c.nombre AS nombre,
-           round(sum(l.cantidad * l.precioUnitario),2) AS totalCliente
-    ORDER BY totalCliente DESC, cliente
+    MATCH (a:Usuario {email:$seguidor})
+    MATCH (b:Usuario {email:$seguido})
+    MERGE (a)-[:SIGUE]->(b)
     """
     with driver.session() as s:
-        return [r.data() for r in s.run(q)]
-
-def clientes_por_producto(driver) -> List[Dict[str, Any]]:
-    q = """
-    MATCH (p:Producto)<-[:DE_PRODUCTO]-(l:Linea)<-[:TIENE_LINEA]-(f:Factura)-[:DE_CLIENTE]->(c:Cliente)
-    RETURN p.codigo AS producto, p.nombre AS nombre,
-           count(DISTINCT c) AS clientesUnicos,
-           collect(DISTINCT c.codigo) AS codigosClientes
-    ORDER BY producto
-    """
-    with driver.session() as s:
-        return [r.data() for r in s.run(q)]
+        s.run(q, seguidor=seguidor, seguido=seguido)
 
 # ------------------------------------------------------------
-# UPDATES / DELETES DE EJEMPLO
+# QUERIES
 # ------------------------------------------------------------
-def update_nombre_producto(driver, codigo: str, nuevo_nombre: str):
+def publicaciones_por_usuario(driver, email: str) -> List[Dict[str, Any]]:
     q = """
-    MATCH (p:Producto {codigo:$codigo})
-    SET p.nombre = $nombre
-    RETURN p.codigo AS codigo, p.nombre AS nombre
+    MATCH (u:Usuario {email:$email})-[:CREA]->(p:Publicación)
+    OPTIONAL MATCH (p)-[:TIENE_ETIQUETA]->(e:Etiqueta)
+    RETURN p.id AS id, p.contenido AS contenido, p.fecha AS fecha,
+           p.likes AS likes, collect(e.nombre) AS etiquetas
+    ORDER BY p.fecha DESC
     """
     with driver.session() as s:
-        rec = s.run(q, codigo=codigo, nombre=nuevo_nombre).single()
-        return rec.data() if rec else None
+        return [r.data() for r in s.run(q, email=email)]
 
-def update_precio_linea(driver, factura_num: str, prod_codigo: str, nuevo_precio: float):
+def amigos_en_comun(driver, email1: str, email2: str) -> List[str]:
     q = """
-    MATCH (f:Factura {numero:$num})-[:TIENE_LINEA]->(l)-[:DE_PRODUCTO]->(p:Producto {codigo:$prod})
-    SET l.precioUnitario = $precio
-    RETURN l.id AS lineaId, l.precioUnitario AS precioUnitario
+    MATCH (u1:Usuario {email:$a})-[:AMIGO_DE]-(amigo)-[:AMIGO_DE]-(u2:Usuario {email:$b})
+    RETURN DISTINCT amigo.nombre AS nombre
     """
     with driver.session() as s:
-        recs = [r.data() for r in s.run(q, num=factura_num, prod=prod_codigo, precio=nuevo_precio)]
-        return recs
+        return [r["nombre"] for r in s.run(q, a=email1, b=email2)]
 
-def delete_linea(driver, linea_id: str):
-    q = "MATCH (l:Linea {id:$id}) DETACH DELETE l"
-    with driver.session() as s:
-        s.run(q, id=linea_id)
-
-def delete_factura_cascade(driver, numero: str):
+def top_publicaciones(driver, limit: int = 5) -> List[Dict[str, Any]]:
     q = """
-    MATCH (f:Factura {numero:$num})
-    OPTIONAL MATCH (f)-[:TIENE_LINEA]->(l:Linea)
-    DETACH DELETE f, l
+    MATCH (p:Publicación)<-[:CREA]-(u:Usuario)
+    RETURN p.id AS id, u.nombre AS autor, p.contenido AS contenido, p.likes AS likes
+    ORDER BY p.likes DESC
+    LIMIT $limit
     """
     with driver.session() as s:
-        s.run(q, num=numero)
+        return [r.data() for r in s.run(q, limit=limit)]
+
+def sugerencias_de_amigos(driver, email: str) -> List[str]:
+    q = """
+    MATCH (u:Usuario {email:$email})-[:AMIGO_DE]-(a)-[:AMIGO_DE]-(sugerencia)
+    WHERE NOT (u)-[:AMIGO_DE]-(sugerencia) AND u <> sugerencia
+    RETURN DISTINCT sugerencia.nombre AS nombre
+    """
+    with driver.session() as s:
+        return [r["nombre"] for r in s.run(q, email=email)]
 
 # ------------------------------------------------------------
-# CARGA DE DATOS DE EJEMPLO
+# DELETES ALL
+# ------------------------------------------------------------
+def delete_all(driver):
+    with driver.session() as s:
+        s.run("MATCH (n) DETACH DELETE n")
+
+# ------------------------------------------------------------
+# EXAMPLE DATA LOAD
 # ------------------------------------------------------------
 def seed_data(driver):
-    # Catálogos
-    upsert_cliente(driver, "C001", "ACME S.A.", "CR")
-    upsert_cliente(driver, "C002", "Tecnova Ltda", "CR")
-    upsert_cliente(driver, "C003", "Cliente sin compras", "CR")
+    print("Creando usuarios...")
+    usuarios = [
+        UsuarioInput("U001","Ana","ana@mail.com","2025-01-01"),
+        UsuarioInput("U002","Bruno","bruno@mail.com","2025-01-02"),
+        UsuarioInput("U003","Carla","carla@mail.com","2025-01-03"),
+        UsuarioInput("U004","Diego","diego@mail.com","2025-01-04"),
+        UsuarioInput("U005","Elena","elena@mail.com","2025-01-05"),
+    ]
+    for u in usuarios:
+        upsert_usuario(driver, u)
 
-    upsert_producto(driver, "P001", "Laptop Pro 14", "Computo")
-    upsert_producto(driver, "P002", "Mouse MX", "Accesorios")
-    upsert_producto(driver, "P003", "Monitor 27\"", "Displays")
-    upsert_producto(driver, "P004", "Dock USB-C", "Accesorios")  # sin ventas
+    print("Creando publicaciones...")
+    create_publicacion(driver, "ana@mail.com", PublicacionInput(
+        "Exploring Neo4j basics!", "2025-02-01", 10, ["tech","music"]))
+    create_publicacion(driver, "bruno@mail.com", PublicacionInput(
+        "My best pasta recipe!", "2025-02-02", 8, ["food"]))
+    create_publicacion(driver, "carla@mail.com", PublicacionInput(
+        "Trip to Peru", "2025-02-03", 15, ["travel"]))
+    create_publicacion(driver, "diego@mail.com", PublicacionInput(
+        "Soccer weekend", "2025-02-04", 4, ["sports"]))
+    create_publicacion(driver, "elena@mail.com", PublicacionInput(
+        "Top 10 playlists", "2025-02-05", 6, ["music"]))
 
-    # Facturas
-    create_factura_with_lineas(driver, FacturaInput(
-        numero="F-1001", fecha="2025-09-20", moneda="USD", cliente="C001",
-        lineas=[
-            LineaInput("P001", 1, 1200),
-            LineaInput("P002", 2, 50),
-        ]
-    ))
-    create_factura_with_lineas(driver, FacturaInput(
-        numero="F-1002", fecha="2025-09-22", moneda="USD", cliente="C002",
-        lineas=[
-            LineaInput("P002", 5, 45),
-            LineaInput("P003", 1, 320),
-        ]
-    ))
-    create_factura_with_lineas(driver, FacturaInput(
-        numero="F-1003", fecha="2025-10-01", moneda="USD", cliente="C001",
-        lineas=[
-            LineaInput("P003", 2, 300),
-        ]
-    ))
+    print("Creando amistades...")
+    create_amistad(driver, "ana@mail.com", "bruno@mail.com")
+    create_amistad(driver, "ana@mail.com", "carla@mail.com")
+    create_amistad(driver, "bruno@mail.com", "diego@mail.com")
+
+    print("Creando seguimientos...")
+    create_seguimiento(driver, "elena@mail.com", "ana@mail.com")
+    create_seguimiento(driver, "carla@mail.com", "diego@mail.com")
 
 # ------------------------------------------------------------
-# DEMO RÁPIDA
+# DEMO / MAIN
 # ------------------------------------------------------------
 def main():
     print(f"Conectando a Neo4j en {URI} ...")
     with get_driver() as driver:
         print("Conexión OK.")
 
-        print("Creando esquema (constraints)...")
+        print("Eliminando datos previos...")
+        delete_all(driver)
+
+        print("Creando constraints...")
         init_schema(driver)
 
-        print("Sembrando datos de ejemplo...")
+        print("Sembrando datos...")
         seed_data(driver)
 
-        print("\nDetalle F-1001:")
-        for row in detalle_factura(driver, "F-1001"):
+        print("\nTop publicaciones:")
+        for row in top_publicaciones(driver):
             print(row)
 
-        print("\nVentas por producto (incluye sin ventas):")
-        for row in ventas_por_producto(driver, incluir_sin_venta=True):
+        print("\nPublicaciones de Ana:")
+        for row in publicaciones_por_usuario(driver, "ana@mail.com"):
             print(row)
 
-        print("\nVentas por producto en Sep-Oct 2025 (incluye sin ventas):")
-        for row in ventas_por_producto(driver, fecha_desde="2025-09-01", fecha_hasta_excl="2025-11-01", incluir_sin_venta=True):
-            print(row)
+        print("\nAmigos en común entre Ana y Bruno:")
+        print(amigos_en_comun(driver, "ana@mail.com", "bruno@mail.com"))
 
-        print("\nVentas por cliente:")
-        for row in ventas_por_cliente(driver):
-            print(row)
-
-        print("\nClientes por producto:")
-        for row in clientes_por_producto(driver):
-            print(row)
-
-        print("\nUpdate nombre producto P002 -> 'Mouse MX Master 3'")
-        print(update_nombre_producto(driver, "P002", "Mouse MX Master 3"))
-
-        print("\nUpdate precio línea (F-1001, P002) -> 48")
-        for r in update_precio_linea(driver, "F-1001", "P002", 48):
-            print(r)
-
-        # Ejemplo de delete (comentar si no quieres borrar)
-        # print("\nBorrando factura F-1003...")
-        # delete_factura_cascade(driver, "F-1003")
+        print("\nSugerencias de amigos para Ana:")
+        print(sugerencias_de_amigos(driver, "ana@mail.com"))
 
         print("\nListo.")
 

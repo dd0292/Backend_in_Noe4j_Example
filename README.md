@@ -42,8 +42,8 @@ By:
 ### Run the app:
 ```bash
 cd app
-python -m venv venv
-source venv/bin/activate
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 python main.py
 ```
