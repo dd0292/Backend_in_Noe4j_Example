@@ -131,6 +131,7 @@ def create_seguimiento(driver, seguidor: str, seguido: str):
 def publicaciones_por_usuario(driver, email: str) -> List[Dict[str, Any]]:
     q = """
     MATCH (u:Usuario {email:$email})-[:CREA]->(p:Publicación)
+    WHERE p.Activo = 1
     OPTIONAL MATCH (p)-[:TIENE_ETIQUETA]->(e:Etiqueta)
     RETURN p.id AS id, p.contenido AS contenido, p.fecha AS fecha,
            p.likes AS likes, collect(e.nombre) AS etiquetas
@@ -142,6 +143,7 @@ def publicaciones_por_usuario(driver, email: str) -> List[Dict[str, Any]]:
 def amigos_en_comun(driver, email1: str, email2: str) -> List[str]:
     q = """
     MATCH (u1:Usuario {email:$a})-[:AMIGO_DE]-(amigo)-[:AMIGO_DE]-(u2:Usuario {email:$b})
+    WHERE u2.Activo = 1
     RETURN DISTINCT amigo.nombre AS nombre
     """
     with driver.session() as s:
@@ -150,6 +152,7 @@ def amigos_en_comun(driver, email1: str, email2: str) -> List[str]:
 def top_publicaciones(driver, limit: int = 5) -> List[Dict[str, Any]]:
     q = """
     MATCH (p:Publicación)<-[:CREA]-(u:Usuario)
+    WHERE p.Activo = 1
     RETURN p.id AS id, u.nombre AS autor, p.contenido AS contenido, p.likes AS likes
     ORDER BY p.likes DESC
     LIMIT $limit
@@ -160,7 +163,7 @@ def top_publicaciones(driver, limit: int = 5) -> List[Dict[str, Any]]:
 def sugerencias_de_amigos(driver, email: str) -> List[str]:
     q = """
     MATCH (u:Usuario {email:$email})-[:AMIGO_DE]-(a)-[:AMIGO_DE]-(sugerencia)
-    WHERE NOT (u)-[:AMIGO_DE]-(sugerencia) AND u <> sugerencia
+    WHERE NOT (u)-[:AMIGO_DE]-(sugerencia) AND u <> sugerencia AND sugerencia.Activo = 1
     RETURN DISTINCT sugerencia.nombre AS nombre
     """
     with driver.session() as s:
