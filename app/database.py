@@ -191,7 +191,7 @@ def amigos_en_comun(driver, email1: str, email2: str) -> List[str]:
     with driver.session() as s:
         return [r["nombre"] for r in s.run(q, email1=email1, email2=email2)]
 
-def top_publicaciones(driver, limit: int = 5) -> List[Dict[str, Any]]:
+def top_publicaciones(driver, skip: int = 0, limit: int = 5) -> List[Dict[str, Any]]:
     q = """
     MATCH (p:Publicación)<-[:CREA]-(u:Usuario)
     OPTIONAL MATCH (p)-[:TIENE_ETIQUETA]->(e:Etiqueta)
@@ -203,10 +203,11 @@ def top_publicaciones(driver, limit: int = 5) -> List[Dict[str, Any]]:
            p.fecha AS fecha,
            etiquetas
     ORDER BY p.likes DESC
+    SKIP $skip
     LIMIT $limit
     """
     with driver.session() as s:
-        return [r.data() for r in s.run(q, limit=limit)]
+        return [r.data() for r in s.run(q, limit=limit, skip=skip)]
 
 def sugerencias_de_amigos(driver, email: str) -> List[str]:
     q = """

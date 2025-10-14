@@ -83,6 +83,10 @@ class SocialApp:
         
         # Load initial data
         self.refresh_users()
+
+        # For pagination, LIMIT is always 5
+        self.post_skip = 0
+        self.post_limit = 5
     
     def create_widgets(self):
         # Main frame
@@ -157,6 +161,16 @@ class SocialApp:
         scrollbar = ttk.Scrollbar(main_frame, orient=tk.VERTICAL, command=self.results_text.yview)
         scrollbar.grid(row=3, column=2, sticky=(tk.N, tk.S), pady=10)
         self.results_text.configure(yscrollcommand=scrollbar.set)
+
+        # Pagination buttons for global posts
+        self.pagination_frame = ttk.Frame(main_frame)
+        self.pagination_frame.grid(row=4, column=0, columnspan=2, pady=5)
+        self.prev_btn = ttk.Button(self.pagination_frame, text="← Previous", command=self.prev_posts)
+        self.next_btn = ttk.Button(self.pagination_frame, text="Next →", command=self.next_posts)
+        self.prev_btn.pack(side=tk.LEFT, padx=5)
+        self.next_btn.pack(side=tk.LEFT, padx=5)
+        self.pagination_frame.grid_remove()  # Hide by default
+
     
     def refresh_users(self):
         """Refresh the list of users in the combobox"""
@@ -188,25 +202,35 @@ class SocialApp:
     def clear_results(self):
         """Clear the results text area"""
         self.results_text.delete(1.0, tk.END)
+        self.pagination_frame.grid_remove()
     
     # =========================================================================
     # SOCIAL FEATURES (existing functions)
     # =========================================================================
     
     def view_global_posts(self):
-        """Display global posts"""
-        if not self.driver:
-            # Demo data
-            posts = top_publicaciones(None)
-        else:
-            posts = top_publicaciones(self.driver)
-        
+        """Display global posts with pagination"""
+        posts = top_publicaciones(self.driver, self.post_skip) if self.driver else top_publicaciones(None, self.post_skip)
         self.clear_results()
-        self.results_text.insert(tk.END, "=== GLOBAL POSTS ===\n\n")
-        
+        self.results_text.insert(tk.END, f"=== GLOBAL POSTS (Showing {self.post_skip+1}-{self.post_skip+len(posts)}) ===\n\n")
         for post in posts:
-            self.results_text.insert(tk.END, publicacion_to_str(post))
-    
+            self.results_text.insert(tk.END, publicacion_to_str(post) + "\n")
+        # Show pagination buttons
+        self.pagination_frame.grid()
+        self.prev_btn['state'] = tk.NORMAL if self.post_skip > 0 else tk.DISABLED
+        self.next_btn['state'] = tk.NORMAL if len(posts) == self.post_limit else tk.DISABLED
+
+    def prev_posts(self):
+        """Show previous page of posts"""
+        if self.post_skip >= self.post_limit:
+            self.post_skip -= self.post_limit
+            self.view_global_posts()
+
+    def next_posts(self):
+        """Show next page of posts"""
+        self.post_skip += self.post_limit
+        self.view_global_posts()
+
     def view_my_posts(self):
         """Display current user's posts"""
         user_email = self.current_user.get()
