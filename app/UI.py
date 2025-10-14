@@ -8,7 +8,7 @@ from neo4j.exceptions import ConstraintError
 # Import functions from main.py
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 try:
-    from main import (
+    from database import (
         get_driver, upsert_usuario, create_publicacion, create_amistad,
         publicaciones_por_usuario, amigos_en_comun, top_publicaciones,
         sugerencias_de_amigos, UsuarioInput, PublicacionInput,
