@@ -2,6 +2,7 @@
 from database import get_driver, delete_all, init_schema, seed_data, get_database_info
 from database import top_publicaciones, publicaciones_por_usuario, amigos_en_comun, sugerencias_de_amigos, publicacion_to_str
 import UI
+import tkinter as tk
 
 def initialize_database():
     """Initialize database with example data"""
@@ -65,7 +66,9 @@ def main():
         print("LANZANDO INTERFAZ GRÁFICA")
         print("="*50)
         
-        UI.main()
+        root = tk.Tk()
+        app = UI.SocialApp(root)
+        root.mainloop()
         
     except Exception as e:
         print(f" Error: {e}")
