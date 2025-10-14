@@ -3,6 +3,7 @@ from tkinter import ttk, messagebox, simpledialog
 from typing import List, Dict, Any
 import sys
 import os
+from neo4j.exceptions import ConstraintError
 
 # Import functions from main.py
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -11,10 +12,12 @@ try:
         get_driver, upsert_usuario, create_publicacion, create_amistad,
         publicaciones_por_usuario, amigos_en_comun, top_publicaciones,
         sugerencias_de_amigos, UsuarioInput, PublicacionInput,
-        get_all_usuarios, delete_all  # We'll need to add this function to main.py
+        get_all_usuarios, delete_all, insert_usuario, find_usuario,
+        usuario_to_str, publicacion_to_str
     )
 except ImportError:
     # Fallback implementations for demonstration
+    print("BUT THIS IS A DEMO, NO DB CONNECTION")
     def get_driver():
         return None
     
@@ -114,6 +117,15 @@ class SocialApp:
                   command=self.create_post).pack(side=tk.LEFT, padx=5)
         ttk.Button(social_frame, text="Add Friend", 
                   command=self.add_friend).pack(side=tk.LEFT, padx=5)
+        ttk.Button(social_frame, text="Remove Friend", 
+                  command=self.remove_friend).pack(side=tk.LEFT, padx=5)
+        ttk.Button(social_frame, text="Follow User", 
+                  command=self.follow_user).pack(side=tk.LEFT, padx=5)
+        ttk.Button(social_frame, text="Stop Following", 
+                  command=self.stop_following).pack(side=tk.LEFT, padx=5)
+        
+        
+        
         
         # CRUD Operations Buttons frame
         crud_frame = ttk.LabelFrame(main_frame, text="CRUD Operations", padding="5")
@@ -193,10 +205,7 @@ class SocialApp:
         self.results_text.insert(tk.END, "=== GLOBAL POSTS ===\n\n")
         
         for post in posts:
-            self.results_text.insert(tk.END, f"Author: {post.get('autor', 'Unknown')}\n")
-            self.results_text.insert(tk.END, f"Content: {post.get('contenido', 'No content')}\n")
-            self.results_text.insert(tk.END, f"Likes: {post.get('likes', 0)}\n")
-            self.results_text.insert(tk.END, "-" * 50 + "\n\n")
+            self.results_text.insert(tk.END, publicacion_to_str(post))
     
     def view_my_posts(self):
         """Display current user's posts"""
@@ -215,13 +224,7 @@ class SocialApp:
         self.results_text.insert(tk.END, f"=== {user_email}'s POSTS ===\n\n")
         
         for post in posts:
-            self.results_text.insert(tk.END, f"ID: {post.get('id', 'Unknown')}\n")
-            self.results_text.insert(tk.END, f"Date: {post.get('fecha', 'Unknown')}\n")
-            self.results_text.insert(tk.END, f"Content: {post.get('contenido', 'No content')}\n")
-            self.results_text.insert(tk.END, f"Likes: {post.get('likes', 0)}\n")
-            tags = post.get('etiquetas', [])
-            self.results_text.insert(tk.END, f"Tags: {', '.join(tags) if tags else 'None'}\n")
-            self.results_text.insert(tk.END, "-" * 50 + "\n\n")
+            self.results_text.insert(tk.END, publicacion_to_str(post) + "\n")
     
     def view_common_friends(self):
         """Display common friends with another user"""
@@ -285,7 +288,7 @@ class SocialApp:
             return
         
         # Create a dialog for post input
-        dialog = PostDialog(self.root, user_email)
+        dialog = PostDialogCreation(self.root, user_email)
         self.root.wait_window(dialog.top)
         
         if dialog.result:
@@ -338,6 +341,106 @@ class SocialApp:
         messagebox.showinfo("Success", f"Friend request sent to {friend_email}!")
         self.view_friend_suggestions()  # Refresh suggestions
     
+    def remove_friend(self):
+        """Remove a friend for the current user"""
+        user_email = self.current_user.get()
+        if not user_email:
+            messagebox.showwarning("Warning", "Please select a user first")
+            return
+        
+        # Get friend's email
+        friend_email = simpledialog.askstring(
+            "Remove Friend", 
+            "Enter the email of the friend you want to remove:",
+            initialvalue=""
+        )
+        
+        if not friend_email:
+            return
+        
+        if friend_email == user_email:
+            messagebox.showwarning("Warning", "You cannot remove yourself")
+            return
+        
+        # Remove the friendship
+        if self.driver:
+            with self.driver.session() as session:
+                session.run(
+                    "MATCH (a:Usuario {email: $user_email})-[r:AMIGO_DE]-(b:Usuario {email: $friend_email}) DELETE r",
+                    user_email=user_email, friend_email=friend_email
+                )
+        else:
+            print(f"Removing friendship between {user_email} and {friend_email}")
+        
+        messagebox.showinfo("Success", f"Friend {friend_email} removed!")
+        self.view_friend_suggestions()  # Refresh suggestions
+    
+    def follow_user(self):
+        """Follow a user"""
+        user_email = self.current_user.get()
+        if not user_email:
+            messagebox.showwarning("Warning", "Please select a user first")
+            return
+        
+        # Get user's email to follow
+        follow_email = simpledialog.askstring(
+            "Follow User", 
+            "Enter the email of the user you want to follow:",
+            initialvalue=""
+        )
+        
+        if not follow_email:
+            return
+        
+        if follow_email == user_email:
+            messagebox.showwarning("Warning", "You cannot follow yourself")
+            return
+        
+        # Create the follow relationship
+        if self.driver:
+            with self.driver.session() as session:
+                session.run(
+                    "MATCH (a:Usuario {email: $user_email}), (b:Usuario {email: $follow_email}) "
+                    "MERGE (a)-[:SIGUE_A]->(b)",
+                    user_email=user_email, follow_email=follow_email
+                )
+        else:
+            print(f"{user_email} is now following {follow_email}")
+        
+        messagebox.showinfo("Success", f"You are now following {follow_email}!")
+    
+    def stop_following(self):
+        """Stop following a user"""
+        user_email = self.current_user.get()
+        if not user_email:
+            messagebox.showwarning("Warning", "Please select a user first")
+            return
+        
+        # Get user's email to stop following
+        unfollow_email = simpledialog.askstring(
+            "Stop Following", 
+            "Enter the email of the user you want to stop following:",
+            initialvalue=""
+        )
+        
+        if not unfollow_email:
+            return
+        
+        if unfollow_email == user_email:
+            messagebox.showwarning("Warning", "You cannot unfollow yourself")
+            return
+        
+        # Remove the follow relationship
+        if self.driver:
+            with self.driver.session() as session:
+                session.run(
+                    "MATCH (a:Usuario {email: $user_email})-[r:SIGUE_A]->(b:Usuario {email: $unfollow_email}) DELETE r",
+                    user_email=user_email, unfollow_email=unfollow_email
+                )
+        else:
+            print(f"{user_email} has stopped following {unfollow_email}")
+        
+        messagebox.showinfo("Success", f"You have stopped following {unfollow_email}!")
     # =========================================================================
     # CRUD OPERATIONS (new functions)
     # =========================================================================
@@ -359,12 +462,15 @@ class SocialApp:
             )
             
             # Create the user
-            if self.driver:
-                upsert_usuario(self.driver, user_input)
-            else:
-                upsert_usuario(None, user_input)
-            
-            messagebox.showinfo("Success", "User created successfully!")
+            try:
+                insert_usuario(self.driver, user_input)
+                messagebox.showinfo("Success", "User created successfully!")
+                self.refresh_users()
+            except ConstraintError:
+                messagebox.showerror("Error", "Email already exists. Please use a different email.")
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not create user: {e}")
+                
             self.refresh_users()  # Refresh the user list
     
     def list_users(self):
@@ -380,7 +486,7 @@ class SocialApp:
         
         if users:
             for user in users:
-                self.results_text.insert(tk.END, f"• {user}\n")
+                self.results_text.insert(tk.END, f"• {usuario_to_str(user)}\n")
         else:
             self.results_text.insert(tk.END, "No users found.\n")
     
@@ -395,27 +501,15 @@ class SocialApp:
         if not search_term:
             return
         
-        if not self.driver:
-            # Demo data
-            users = get_all_usuarios(None)
-            filtered_users = [user for user in users if search_term.lower() in user.lower()]
-        else:
-            # This query would need to be implemented in main.py
-            with self.driver.session() as session:
-                result = session.run(
-                    "MATCH (u:Usuario) WHERE u.nombre CONTAINS $search OR u.email CONTAINS $search RETURN u.email AS email",
-                    search=search_term
-                )
-                filtered_users = [record["email"] for record in result]
+        user = find_usuario(self.driver, search_term) if self.driver else None
         
         self.clear_results()
         self.results_text.insert(tk.END, f"=== SEARCH RESULTS FOR '{search_term}' ===\n\n")
         
-        if filtered_users:
-            for user in filtered_users:
-                self.results_text.insert(tk.END, f"• {user}\n")
+        if user:
+                self.results_text.insert(tk.END, f"• {usuario_to_str(user)}\n")
         else:
-            self.results_text.insert(tk.END, "No users found matching your search.\n")
+            self.results_text.insert(tk.END, "No users found under that email.\n")
     
     def update_user(self):
         """Update an existing user"""
@@ -500,19 +594,19 @@ class SocialApp:
         
         # In a real implementation, you would fetch the current post data here
         # For now, we'll create a dialog with placeholder values
-        dialog = PostDialog(self.root, "Update Post")
+        dialog = PostDialogUpdate(self.root, "Update Post")
         self.root.wait_window(dialog.top)
         
         if dialog.result:
-            contenido, fecha, likes, etiquetas = dialog.result
+            contenido, likes = dialog.result
             
             # Update the post
             # This function would need to be implemented in main.py
             if self.driver:
                 with self.driver.session() as session:
                     session.run(
-                        "MATCH (p:Publicación {id: $id}) SET p.contenido = $contenido, p.fecha = date($fecha), p.likes = $likes",
-                        id=post_id, contenido=contenido, fecha=fecha, likes=likes
+                        "MATCH (p:Publicación {id: $id}) SET p.contenido = $contenido,  p.likes = $likes",
+                        id=post_id, contenido=contenido, likes=likes
                     )
             else:
                 print(f"Updating post {post_id}: {contenido}")
@@ -551,7 +645,55 @@ class SocialApp:
         self.view_my_posts()  # Refresh to show the updated list
 
 
-class PostDialog:
+class PostDialogUpdate:
+    """Dialog for updating a post (only content and likes)"""
+    def __init__(self, parent, user_email, mode="update"):
+        self.top = tk.Toplevel(parent)
+        self.top.title(f"{mode.title()} Post - {user_email}")
+        self.top.geometry("400x220")
+        self.result = None
+        
+        # Content
+        ttk.Label(self.top, text="New Content:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=10)
+        self.content_text = tk.Text(self.top, height=5, width=40)
+        self.content_text.grid(row=0, column=1, columnspan=2, padx=5, pady=5, sticky=(tk.W, tk.E))
+        
+        # Likes
+        ttk.Label(self.top, text="Likes:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=10)
+        self.likes_spinbox = ttk.Spinbox(self.top, from_=0, to=100000, width=10)
+        self.likes_spinbox.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
+        self.likes_spinbox.set("0")
+        
+        # Buttons
+        ttk.Button(self.top, text="OK", command=self.ok).grid(row=2, column=1, padx=5, pady=15)
+        ttk.Button(self.top, text="Cancel", command=self.cancel).grid(row=2, column=2, padx=5, pady=15)
+        
+        self.top.columnconfigure(1, weight=1)
+
+    def ok(self):
+        """Handle OK button click"""
+        contenido = self.content_text.get(1.0, tk.END).strip()
+        likes_str = self.likes_spinbox.get().strip()
+        
+        # Validation
+        if not contenido:
+            messagebox.showwarning("Warning", "Content cannot be empty")
+            return
+        
+        try:
+            likes = int(likes_str)
+        except ValueError:
+            messagebox.showwarning("Warning", "Likes must be a valid number")
+            return
+        
+        self.result = (contenido, likes)
+        self.top.destroy()
+
+    def cancel(self):
+        """Handle Cancel button click"""
+        self.top.destroy()
+
+class PostDialogCreation:
     """Dialog for creating or updating a post"""
     def __init__(self, parent, user_email, mode="create"):
         self.top = tk.Toplevel(parent)
@@ -605,6 +747,7 @@ class PostDialog:
     def cancel(self):
         """Handle Cancel button click"""
         self.top.destroy()
+
 
 
 class UserDialog:

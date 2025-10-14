@@ -76,6 +76,17 @@ def upsert_usuario(driver, user: UsuarioInput):
     with driver.session() as s:
         return s.run(q, **user.__dict__).single()
 
+def insert_usuario(driver, user: UsuarioInput):
+    q = """
+    CREATE (u:Usuario {
+        id:$id, nombre:$nombre, email:$email,
+        fechaRegistro:date($fechaRegistro), Activo:1
+    })
+    RETURN u
+    """
+    with driver.session() as s:
+        return s.run(q, **user.__dict__).single()
+
 def create_publicacion(driver, user_email: str, pub: PublicacionInput):
     """
     Crea una publicación y la conecta con el autor y sus etiquetas.
@@ -125,50 +136,94 @@ def create_seguimiento(driver, seguidor: str, seguido: str):
     with driver.session() as s:
         s.run(q, seguidor=seguidor, seguido=seguido)
 
+def find_usuario(driver, email: str) -> Optional[Dict[str, Any]]:
+    q = "MATCH (u:Usuario {email:$email}) RETURN u"
+    with driver.session() as s:
+        record = s.run(q, email=email).single()
+        return record["u"] if record else None
+
+   
+# ------------------------------------------------------------
+# TOSTRING
+# ------------------------------------------------------------
+
+def usuario_to_str(user: Dict[str, Any]) -> str:
+    return f"{user['id']}, {user['nombre']}, {user['email']}, {user['fechaRegistro']}"
+
+def publicacion_to_str(pub: Dict[str, Any]) -> str:
+    etiquetas = ", ".join(pub.get("etiquetas", []))
+    return (f"ID: {pub['id']}, Contenido: {pub['contenido']}, \nFecha: {pub['fecha']}, "
+            f"Likes: {pub['likes']}, Etiquetas: [{etiquetas}]"
+            + "\n" + "-"*50 + "\n")
 # ------------------------------------------------------------
 # QUERIES
 # ------------------------------------------------------------
 def publicaciones_por_usuario(driver, email: str) -> List[Dict[str, Any]]:
     q = """
-    MATCH (u:Usuario {email:$email})-[:CREA]->(p:Publicación)
-    WHERE p.Activo = 1
+    MATCH (u:Usuario {email: $email})-[:CREA]->(p:Publicación)
     OPTIONAL MATCH (p)-[:TIENE_ETIQUETA]->(e:Etiqueta)
-    RETURN p.id AS id, p.contenido AS contenido, p.fecha AS fecha,
-           p.likes AS likes, collect(e.nombre) AS etiquetas
+    WITH p, collect(DISTINCT e.nombre) AS etiquetas
+    RETURN p.id AS id,
+           p.contenido AS contenido,
+           p.fecha AS fecha,
+           p.likes AS likes,
+           etiquetas
     ORDER BY p.fecha DESC
     """
     with driver.session() as s:
         return [r.data() for r in s.run(q, email=email)]
 
+
+
 def amigos_en_comun(driver, email1: str, email2: str) -> List[str]:
     q = """
-    MATCH (u1:Usuario {email:$a})-[:AMIGO_DE]-(amigo)-[:AMIGO_DE]-(u2:Usuario {email:$b})
-    WHERE u2.Activo = 1
-    RETURN DISTINCT amigo.nombre AS nombre
+    MATCH (u1:Usuario {email: $email1}), (u2:Usuario {email: $email2})
+    MATCH (amigo:Usuario)
+    WHERE (u1)-[:AMIGO_DE]-(amigo)
+      AND (u2)-[:AMIGO_DE]-(amigo)
+      AND amigo <> u1
+      AND amigo <> u2
+    RETURN DISTINCT coalesce(amigo.nombre, amigo.email) AS nombre
+    ORDER BY nombre
     """
     with driver.session() as s:
-        return [r["nombre"] for r in s.run(q, a=email1, b=email2)]
+        return [r["nombre"] for r in s.run(q, email1=email1, email2=email2)]
 
 def top_publicaciones(driver, limit: int = 5) -> List[Dict[str, Any]]:
     q = """
     MATCH (p:Publicación)<-[:CREA]-(u:Usuario)
-    WHERE p.Activo = 1
-    RETURN p.id AS id, u.nombre AS autor, p.contenido AS contenido, p.likes AS likes
+    OPTIONAL MATCH (p)-[:TIENE_ETIQUETA]->(e:Etiqueta)
+    WITH p, u, collect(DISTINCT e.nombre) AS etiquetas
+    RETURN p.id AS id,
+           u.nombre AS autor,
+           p.contenido AS contenido,
+           p.likes AS likes,
+           p.fecha AS fecha,
+           etiquetas
     ORDER BY p.likes DESC
     LIMIT $limit
     """
     with driver.session() as s:
         return [r.data() for r in s.run(q, limit=limit)]
 
+
+
 def sugerencias_de_amigos(driver, email: str) -> List[str]:
     q = """
-    MATCH (u:Usuario {email:$email})-[:AMIGO_DE]-(a)-[:AMIGO_DE]-(sugerencia)
-    WHERE NOT (u)-[:AMIGO_DE]-(sugerencia) AND u <> sugerencia AND sugerencia.Activo = 1
+    MATCH (u:Usuario {email: $email})-[:AMIGO_DE]-(a)-[:AMIGO_DE]-(sugerencia:Usuario)
+    WHERE NOT (u)-[:AMIGO_DE]-(sugerencia)
+      AND u <> sugerencia
     RETURN DISTINCT sugerencia.nombre AS nombre
     """
     with driver.session() as s:
         return [r["nombre"] for r in s.run(q, email=email)]
 
+
+def get_all_usuarios(driver) -> List[Dict[str, Any]]:
+    q = "MATCH (u:Usuario) RETURN u"
+    with driver.session() as s:
+        return [r["u"] for r in s.run(q)]
+    
 # ------------------------------------------------------------
 # DELETES ALL
 # ------------------------------------------------------------
@@ -186,7 +241,7 @@ def seed_data(driver):
         UsuarioInput("U002","Bruno","bruno@mail.com","2025-01-02"),
         UsuarioInput("U003","Carla","carla@mail.com","2025-01-03"),
         UsuarioInput("U004","Diego","diego@mail.com","2025-01-04"),
-        UsuarioInput("U005","Elena","elena@mail.com","2025-01-05"),
+        UsuarioInput("U005","Elena","elena@mail.com","2025-01-05")
     ]
     for u in usuarios:
         upsert_usuario(driver, u)
@@ -231,17 +286,20 @@ def main():
 
         print("\nTop publicaciones:")
         for row in top_publicaciones(driver):
-            print(row)
+            print(publicacion_to_str(row))
 
         print("\nPublicaciones de Ana:")
         for row in publicaciones_por_usuario(driver, "ana@mail.com"):
-            print(row)
+            print(publicacion_to_str(row))
 
         print("\nAmigos en común entre Ana y Bruno:")
         print(amigos_en_comun(driver, "ana@mail.com", "bruno@mail.com"))
 
         print("\nSugerencias de amigos para Ana:")
         print(sugerencias_de_amigos(driver, "ana@mail.com"))
+
+        print("\n Amigos en común entre Carla y Bruno (sin amistad directa):")
+        print(amigos_en_comun(driver, "carla@mail.com", "bruno@mail.com"))
 
         print("\nListo.")
 
